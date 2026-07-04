@@ -47,7 +47,7 @@ aws cloudformation describe-stacks --stack-name lab-onprem --query "Stacks[0].Ou
 ## 2. Deploy the Lab Network (VPN Side)
 *Goal: Provision the AWS environment with a full 3-tier application stack and VPN gateway.*
 
-This stack deploys the main VPC (`10.10.0.0/16`), Subnets, ALB, App instances, and a Postgres RDS database. The app instances will pull your website from a private GitHub repo at boot time.
+This stack deploys the main VPC (`10.10.0.0/16`), Subnets, NAT Gateway, ALB, App instances, and a Postgres RDS database. The app instances will pull your website from a private GitHub repo at boot time.
 
 **Prerequisite — Store your GitHub PAT in Secrets Manager:**
 The EC2 instances retrieve this secret automatically on first boot. You must create it *before* launching the stack.
@@ -57,9 +57,13 @@ The EC2 instances retrieve this secret automatically on first boot. You must cre
 3. Run this command (replace the token value):
 
 ```powershell
+# You can store the PAT as a simple plain-text string:
 aws secretsmanager create-secret `
   --name "lab-github-token" `
-  --secret-string '{"token":"ghp_YOUR_PAT_HERE"}'
+  --secret-string "ghp_YOUR_PAT_HERE"
+
+# OR as a JSON object (both formats are supported):
+# aws secretsmanager create-secret --name "lab-github-token" --secret-string '{"token":"ghp_YOUR_PAT_HERE"}'
 ```
 
 > [!IMPORTANT]
@@ -67,13 +71,19 @@ aws secretsmanager create-secret `
 
 **Command (PowerShell):**
 *Replace `34.200.235.113` with the IP you copied above and `your-key-pair` with your key name.*
-```powershell
-aws cloudformation create-stack --stack-name lab-network --template-body file://cloudnetwork.yaml --parameters ParameterKey=EnvironmentName,ParameterValue=lab ParameterKey=KeyName,ParameterValue=<your-key-pair> ParameterKey=OnPremPublicIP,ParameterValue=34.200.235.113 ParameterKey=OnPremCIDR,ParameterValue=192.168.1.0/24 --capabilities CAPABILITY_NAMED_IAM
+aws cloudformation create-stack `
+  --stack-name lab-network `
+  --template-body file://cloudnetwork.yaml `
+  --parameters `
+    ParameterKey=EnvironmentName,ParameterValue=lab `
+    ParameterKey=KeyName,ParameterValue=<your-key-pair> `
+    ParameterKey=OnPremPublicIP,ParameterValue=34.200.235.113 `
+    ParameterKey=OnPremCIDR,ParameterValue=192.168.1.0/24 `
+  --capabilities CAPABILITY_NAMED_IAM
 ```
-*(Note: If the stack already exists, use `update-stack` instead.)*
 
 **Check Deployment Progress:**
-Since this stack includes an RDS database, it will take **12-15 minutes** to complete. Monitor the status with this command:
+Since this stack includes an RDS database, it will take **12-15 minutes** to complete. Monitor the status:
 ```powershell
 aws cloudformation describe-stacks --stack-name lab-network --query "Stacks[0].StackStatus" --output text
 ```
@@ -307,16 +317,44 @@ Based on the implementation of this lab, here are several "Production-Ready" rec
 
 1.  **Embrace Zero-SSH:** Moving from Bastion/SSH to **SSM Session Manager** significantly reduces your attack surface.
 2.  **Cost Optimization:**
-    *   **NAT Gateway:** While required for initial setup, it is the most expensive "idle" resource. Consider using a **Golden AMI** to eliminate the need for an outbound NAT Gateway entirely.
-    *   **Endpoint Audit:** Always remove Interface Endpoints (like Secrets Manager) if your application logic doesn't actively use them to save ~$7/mo.
+    *   **NAT Gateway:** The NAT Gateway is unconditionally deployed to ensure App instances always have internet access to bootstrap and communicate with external services (like GitHub).
+    *   **Endpoint Audit:** The Interface Endpoints (SSM, Secrets Manager, SSMMessages, EC2Messages) are kept for secure, private access to AWS systems without public exposure.
 3.  **Dynamic Secrets:** Never hardcode passwords. The integration with **AWS Secrets Manager** in this project ensures that credentials are randomized and retrieved securely at runtime.
 4.  **Logging & Visibility:** Ensure **VPC Flow Logs** are active to audit all traffic crossing your hybrid boundary (Site-to-Site VPN).
 
-## 7. Cleanup
+## 7. NAT Gateway Configuration (Always-On)
+The NAT Gateway is configured to be unconditionally active. Toggling NAT Gateway state is no longer supported to ensure consistent internet access for private instance boot processes.
+
+## 8. Recovery — Re-running UserData After a Failed Bootstrap
+*Use this if the app instances deployed before the GitHub PAT secret was correctly set up and the website is serving a clone error.*
+
+If the `lab-network` stack deployed with an incorrect or missing GitHub token in Secrets Manager, the `UserData` script on each instance will have failed to clone the repository. The instances will be running but serving the `Deploy Error: Failed to clone repo` page.
+
+**Connect to each instance via SSM and re-run the bootstrap:**
+```powershell
+# Get instance IDs
+$INST1 = aws cloudformation describe-stacks --stack-name lab-network --query "Stacks[0].Outputs[?OutputKey=='AppInstance1Id'].OutputValue" --output text --no-cli-pager
+$INST2 = aws cloudformation describe-stacks --stack-name lab-network --query "Stacks[0].Outputs[?OutputKey=='AppInstance2Id'].OutputValue" --output text --no-cli-pager
+
+# Start SSM session to instance 1 (repeat for instance 2)
+aws ssm start-session --target $INST1
+```
+
+Inside the session, check what failed and re-run the relevant commands:
+```bash
+# Check the UserData log
+sudo cat /var/log/cloud-init-output.log | tail -50
+
+# Re-run package install if it failed
+sudo dnf update -y
+sudo dnf install -y nginx git jq
+```
+
+## 9. Cleanup
 *Goal: Remove all resources to stop billing.*
 
 ```powershell
-# Delete the CloudFormation stacks (this removes EC2, RDS, VPN, ALB, etc.)
+# Delete the main network and on-prem stacks
 aws cloudformation delete-stack --stack-name lab-network
 aws cloudformation delete-stack --stack-name lab-onprem
 
@@ -325,4 +363,4 @@ aws secretsmanager delete-secret --secret-id lab-github-token --force-delete-wit
 ```
 
 > [!NOTE]
-> Stack deletion order matters — `lab-network` and `lab-onprem` can be deleted in parallel. The `lab-db-secret` (RDS password) is deleted automatically with the `lab-network` stack. The `lab-github-token` secret is standalone and must be deleted separately with the command above.
+> The `lab-db-secret` (RDS password) is deleted automatically with the `lab-network` stack. The `lab-github-token` secret is standalone and must be deleted separately. `lab-network` and `lab-onprem` can be deleted in parallel.

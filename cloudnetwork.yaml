@@ -22,7 +22,6 @@ Parameters:
     Type: String
     Default: 192.168.1.0/24
 
-  
   KeyName:
     Description: KeyPair for SSH access
     Type: AWS::EC2::KeyPair::KeyName
@@ -30,7 +29,7 @@ Parameters:
   LatestAmazonLinuxAmi:
     Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
     Default: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64'
-  
+
   PublicSubnet1CIDR:
     Description: CIDR for Public Subnet A
     Type: String
@@ -60,6 +59,8 @@ Parameters:
     Description: CIDR for DB Subnet B
     Type: String
     Default: 10.10.21.0/24
+
+
 
 Resources:
   # ==========================================
@@ -95,7 +96,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: !Ref PublicSubnet1CIDR
       MapPublicIpOnLaunch: true
       Tags:
@@ -106,7 +107,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: !Ref PublicSubnet2CIDR
       MapPublicIpOnLaunch: true
       Tags:
@@ -117,7 +118,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: !Ref AppSubnet1CIDR
       MapPublicIpOnLaunch: false
       Tags:
@@ -128,7 +129,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: !Ref AppSubnet2CIDR
       MapPublicIpOnLaunch: false
       Tags:
@@ -139,7 +140,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: !Ref DBSubnet1CIDR
       MapPublicIpOnLaunch: false
       Tags:
@@ -150,7 +151,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
-      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: !Ref DBSubnet2CIDR
       MapPublicIpOnLaunch: false
       Tags:
@@ -158,13 +159,16 @@ Resources:
           Value: !Sub ${EnvironmentName}-db-subnet-b
 
   # ==========================================
-  # NAT Gateway (Single NAT for Cost Savings/Simplicity per manual guide)
+  # NAT Gateway (conditional — controlled by DeployNAT parameter)
   # ==========================================
   NatGatewayEIP:
     Type: AWS::EC2::EIP
     DependsOn: InternetGatewayAttachment
     Properties:
       Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-nat-eip
 
   NatGateway:
     Type: AWS::EC2::NatGateway
@@ -175,10 +179,17 @@ Resources:
         - Key: Name
           Value: !Sub ${EnvironmentName}-nat
 
+  AppRouteToNat:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref AppRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+
   # ==========================================
   # Route Tables
   # ==========================================
-  # Public Route Table
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -195,7 +206,6 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
-  # App Route Table (Private with NAT)
   AppRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -204,14 +214,7 @@ Resources:
         - Key: Name
           Value: !Sub ${EnvironmentName}-app-rt
 
-  AppRouteToNat:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref AppRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway
 
-  # DB Route Table (Isolated)
   DBRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -220,7 +223,6 @@ Resources:
         - Key: Name
           Value: !Sub ${EnvironmentName}-db-rt
 
-  # Associations
   PublicSubnet1Assoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
@@ -294,6 +296,10 @@ Resources:
           FromPort: 80
           ToPort: 80
           SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCIDR
         - IpProtocol: icmp
           FromPort: -1
           ToPort: -1
@@ -301,15 +307,6 @@ Resources:
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
-
-  APPSecurityGroupSelfIngress:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref APPSecurityGroup
-      IpProtocol: tcp
-      FromPort: 443
-      ToPort: 443
-      SourceSecurityGroupId: !Ref APPSecurityGroup
 
   DBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -334,11 +331,9 @@ Resources:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
 
-
   # ==========================================
-  # Compute Tier (Step 4 & 5)
+  # Compute Tier (ALB + EC2)
   # ==========================================
-
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
@@ -376,7 +371,7 @@ Resources:
   AppInstance1:
     Type: AWS::EC2::Instance
     Properties:
-      InstanceType: t3.micro
+      InstanceType: t3.medium
       ImageId: !Ref LatestAmazonLinuxAmi
       KeyName: !Ref KeyName
       SubnetId: !Ref AppSubnet1
@@ -386,20 +381,33 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          # Update and Install Nginx + Git + jq
+          # Update and install packages
           dnf update -y
           dnf install -y nginx git jq
+          curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+          dnf install -y nodejs
           systemctl enable nginx
           systemctl start nginx
 
-          # Retrieve GitHub PAT from Secrets Manager
-          GITHUB_TOKEN=$(aws secretsmanager get-secret-value \
+          # Retrieve GitHub PAT (gracefully handles plain text token, standard JSON key, or custom JSON)
+          SECRET_VAL=$(aws secretsmanager get-secret-value \
             --secret-id lab-github-token \
             --region ${AWS::Region} \
             --query SecretString \
-            --output text | jq -r .token)
+            --output text 2>&1)
 
-          # Deploy website from private GitHub repo
+          if [ $? -ne 0 ] || [ -z "$SECRET_VAL" ]; then
+            echo "Failed to retrieve secret lab-github-token: $SECRET_VAL"
+            GITHUB_TOKEN=""
+          elif echo "$SECRET_VAL" | jq -e . >/dev/null 2>&1; then
+            GITHUB_TOKEN=$(echo "$SECRET_VAL" | jq -r '.token // .password // .SecretString // empty')
+            if [ -z "$GITHUB_TOKEN" ] || [ "$GITHUB_TOKEN" = "null" ]; then
+              GITHUB_TOKEN=$(echo "$SECRET_VAL" | jq -r 'to_entries[0].value')
+            fi
+          else
+            GITHUB_TOKEN="$SECRET_VAL"
+          fi
+
           REPO_URL="https://${!GITHUB_TOKEN}@github.com/ms-solutions-app/edu-app.git"
           CLONE_DIR="/tmp/edu-app"
           WEB_ROOT="/usr/share/nginx/html"
@@ -407,32 +415,38 @@ Resources:
           git clone "$REPO_URL" "$CLONE_DIR"
 
           if [ $? -eq 0 ]; then
-            # Find the directory containing index.html (handles repos with a subfolder)
-            HTML_DIR=$(find "$CLONE_DIR" -name "index.html" -not -path "*/node_modules/*" | head -1 | xargs dirname)
-            if [ -n "$HTML_DIR" ]; then
+            cd "$CLONE_DIR"
+            npm install
+            npm run build
+
+            BUILD_DIR="$CLONE_DIR/dist"
+
+            if [ -d "$BUILD_DIR" ]; then
               rm -rf "$WEB_ROOT"/*
-              cp -r "$HTML_DIR"/* "$WEB_ROOT"/
+              cp -r "$BUILD_DIR"/* "$WEB_ROOT"/
               chown -R nginx:nginx "$WEB_ROOT"
 
-              # Inject AZ/IP identification banner into index.html
-              PRIVATE_IP=$(hostname -I | awk '{print $1}')
-              BANNER='<div style="position:fixed;bottom:16px;right:16px;background:rgba(0,0,0,0.75);color:#fff;font-family:monospace;font-size:13px;padding:10px 16px;border-radius:8px;z-index:9999;backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,0.15)">&#128994; Served by: <strong>'"$PRIVATE_IP"'</strong> &nbsp;|&nbsp; AZ: <strong>AZ-A</strong></div>'
-              sed -i "s|</body>|$BANNER</body>|I" "$WEB_ROOT"/index.html
+              # Write banner placeholder (simplified to avoid heredoc issues)
+              TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" -s)
+              AZ=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
+              PRIVATE_IP=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/local-ipv4)
+
+              BANNER="<div style='position:fixed;bottom:16px;right:16px;background:rgba(0,0,0,0.75);color:#fff;font-family:monospace;font-size:13px;padding:10px 16px;border-radius:8px;z-index:9999;backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,0.15)'>&#128994; Served by IP: <strong>$PRIVATE_IP</strong> | AZ: <strong>$AZ</strong></div>"
+              echo "$BANNER" >> /usr/share/nginx/html/index.html
+
             else
-              echo "<h1>Deploy Error: index.html not found in repo</h1><p>Instance: $(hostname -f) | AZ-A</p>" > "$WEB_ROOT"/index.html
+              echo "<h1>Deploy Error: Build output not found</h1>" > "$WEB_ROOT/index.html"
             fi
           else
-            echo "<h1>Deploy Error: Failed to clone repo</h1><p>Instance: $(hostname -f) | AZ-A</p>" > "$WEB_ROOT"/index.html
+            echo "<h1>Deploy Error: Failed to clone repo</h1>" > "$WEB_ROOT/index.html"
           fi
 
-          # Remove cloned repo (don't leave source code on disk)
           rm -rf "$CLONE_DIR"
+
+          sed -i '/location \/ {/a \        try_files $uri /index.html;' /etc/nginx/nginx.conf
           systemctl restart nginx
 
-          # Install SSM Agent
-          dnf install -y amazon-ssm-agent
-          systemctl enable amazon-ssm-agent
-          systemctl start amazon-ssm-agent
+          # Note: SSM Agent is pre-installed on Amazon Linux 2023
       Tags:
         - Key: Name
           Value: !Sub ${EnvironmentName}-app-1
@@ -440,7 +454,7 @@ Resources:
   AppInstance2:
     Type: AWS::EC2::Instance
     Properties:
-      InstanceType: t3.micro
+      InstanceType: t3.medium
       ImageId: !Ref LatestAmazonLinuxAmi
       KeyName: !Ref KeyName
       SubnetId: !Ref AppSubnet2
@@ -450,20 +464,36 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          # Update and Install Nginx + Git + jq
+
+          # Update and install packages
           dnf update -y
           dnf install -y nginx git jq
+
+          curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+          dnf install -y nodejs
+
           systemctl enable nginx
           systemctl start nginx
 
-          # Retrieve GitHub PAT from Secrets Manager
-          GITHUB_TOKEN=$(aws secretsmanager get-secret-value \
+          # Retrieve GitHub PAT (gracefully handles plain text token, standard JSON key, or custom JSON)
+          SECRET_VAL=$(aws secretsmanager get-secret-value \
             --secret-id lab-github-token \
             --region ${AWS::Region} \
             --query SecretString \
-            --output text | jq -r .token)
+            --output text 2>&1)
 
-          # Deploy website from private GitHub repo
+          if [ $? -ne 0 ] || [ -z "$SECRET_VAL" ]; then
+            echo "Failed to retrieve secret lab-github-token: $SECRET_VAL"
+            GITHUB_TOKEN=""
+          elif echo "$SECRET_VAL" | jq -e . >/dev/null 2>&1; then
+            GITHUB_TOKEN=$(echo "$SECRET_VAL" | jq -r '.token // .password // .SecretString // empty')
+            if [ -z "$GITHUB_TOKEN" ] || [ "$GITHUB_TOKEN" = "null" ]; then
+              GITHUB_TOKEN=$(echo "$SECRET_VAL" | jq -r 'to_entries[0].value')
+            fi
+          else
+            GITHUB_TOKEN="$SECRET_VAL"
+          fi
+
           REPO_URL="https://${!GITHUB_TOKEN}@github.com/ms-solutions-app/edu-app.git"
           CLONE_DIR="/tmp/edu-app"
           WEB_ROOT="/usr/share/nginx/html"
@@ -471,32 +501,37 @@ Resources:
           git clone "$REPO_URL" "$CLONE_DIR"
 
           if [ $? -eq 0 ]; then
-            # Find the directory containing index.html (handles repos with a subfolder)
-            HTML_DIR=$(find "$CLONE_DIR" -name "index.html" -not -path "*/node_modules/*" | head -1 | xargs dirname)
-            if [ -n "$HTML_DIR" ]; then
+            cd "$CLONE_DIR"
+            npm install
+            npm run build
+
+            BUILD_DIR="$CLONE_DIR/dist"
+
+            if [ -d "$BUILD_DIR" ]; then
               rm -rf "$WEB_ROOT"/*
-              cp -r "$HTML_DIR"/* "$WEB_ROOT"/
+              cp -r "$BUILD_DIR"/* "$WEB_ROOT"/
               chown -R nginx:nginx "$WEB_ROOT"
 
-              # Inject AZ/IP identification banner into index.html
-              PRIVATE_IP=$(hostname -I | awk '{print $1}')
-              BANNER='<div style="position:fixed;bottom:16px;right:16px;background:rgba(0,0,0,0.75);color:#fff;font-family:monospace;font-size:13px;padding:10px 16px;border-radius:8px;z-index:9999;backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,0.15)">&#128994; Served by: <strong>'"$PRIVATE_IP"'</strong> &nbsp;|&nbsp; AZ: <strong>AZ-B</strong></div>'
-              sed -i "s|</body>|$BANNER</body>|I" "$WEB_ROOT"/index.html
+              # Write banner placeholder (simplified to avoid heredoc issues)
+              TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" -s)
+              AZ=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
+              PRIVATE_IP=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/local-ipv4)
+
+              BANNER="<div style='position:fixed;bottom:16px;right:16px;background:rgba(0,0,0,0.75);color:#fff;font-family:monospace;font-size:13px;padding:10px 16px;border-radius:8px;z-index:9999;backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,0.15)'>&#128994; Served by IP: <strong>$PRIVATE_IP</strong> | AZ: <strong>$AZ</strong></div>"
+              echo "$BANNER" >> /usr/share/nginx/html/index.html
+
             else
-              echo "<h1>Deploy Error: index.html not found in repo</h1><p>Instance: $(hostname -f) | AZ-B</p>" > "$WEB_ROOT"/index.html
+              echo "<h1>Deploy Error: Build output not found</h1>" > "$WEB_ROOT/index.html"
             fi
           else
-            echo "<h1>Deploy Error: Failed to clone repo</h1><p>Instance: $(hostname -f) | AZ-B</p>" > "$WEB_ROOT"/index.html
+            echo "<h1>Deploy Error: Failed to clone repo</h1>" > "$WEB_ROOT/index.html"
           fi
-
-          # Remove cloned repo (don't leave source code on disk)
           rm -rf "$CLONE_DIR"
+
+          sed -i '/location \/ {/a \        try_files $uri /index.html;' /etc/nginx/nginx.conf
           systemctl restart nginx
 
-          # Install SSM Agent
-          dnf install -y amazon-ssm-agent
-          systemctl enable amazon-ssm-agent
-          systemctl start amazon-ssm-agent
+          # Note: SSM Agent is pre-installed on Amazon Linux 2023
       Tags:
         - Key: Name
           Value: !Sub ${EnvironmentName}-app-2
@@ -546,7 +581,7 @@ Resources:
       VpnConnectionId: !Ref VPNConnection
 
   # ==========================================
-  # Route Propagation (CRITICAL FIX)
+  # Route Propagation
   # ==========================================
   PublicRoutePropagation:
     Type: AWS::EC2::VPNGatewayRoutePropagation
@@ -573,7 +608,7 @@ Resources:
       VpnGatewayId: !Ref VPNGateway
 
   # ==========================================
-  # Database Tier (Step 6)
+  # Database Tier
   # ==========================================
   DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
@@ -592,10 +627,7 @@ Resources:
         SecretStringTemplate: '{"username": "labadmin"}'
         GenerateStringKey: "password"
         PasswordLength: 16
-        ExcludeCharacters: '"@/\'
-
-  # GitHub PAT secret must be pre-created by the operator:
-  # aws secretsmanager create-secret --name "lab-github-token" --secret-string '{"token":"<YOUR_PAT>"}'
+        ExcludeCharacters: "\"@/"
 
   DBInstance:
     Type: AWS::RDS::DBInstance
@@ -617,7 +649,7 @@ Resources:
           Value: !Sub ${EnvironmentName}-rds
 
   # ==========================================
-  # VPC Endpoints (Step 7)
+  # VPC Endpoints
   # ==========================================
   S3Endpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -629,15 +661,6 @@ Resources:
         - !Ref AppRouteTable
         - !Ref DBRouteTable
 
-  DynamoDBEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.dynamodb
-      VpcId: !Ref VPC
-      VpcEndpointType: Gateway
-      RouteTableIds:
-        - !Ref AppRouteTable
-        - !Ref DBRouteTable
 
   SSMInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -727,7 +750,7 @@ Resources:
         - !Ref AppInstanceRole
 
   # ==========================================
-  # Observability (Step 9)
+  # Observability
   # ==========================================
   VPCFlowLogsLogGroup:
     Type: AWS::Logs::LogGroup
