@@ -71,6 +71,8 @@ aws secretsmanager create-secret `
 
 **Command (PowerShell):**
 *Replace `34.200.235.113` with the IP you copied above and `your-key-pair` with your key name.*
+
+```powershell
 aws cloudformation create-stack `
   --stack-name lab-network `
   --template-body file://cloudnetwork.yaml `
@@ -97,7 +99,7 @@ Wait until it returns **`CREATE_COMPLETE`** before proceeding.
     ```powershell
     aws cloudformation describe-stacks --stack-name lab-network --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerDNS'].OutputValue" --output text --no-cli-pager
     ```
-    *Expected:* You should see a "Hello World" page from one of the app servers.
+    *Expected:* You should see the "DevOps & Cloud Training" website with a badge at the bottom.
 
     > [!TIP]
     > **Connecting Error?** If you get "Connection Refused," your browser might be trying to force HTTPS. Ensure you are using `http://` (not `https://`) or try an Incognito window.
@@ -106,8 +108,9 @@ Wait until it returns **`CREATE_COMPLETE`** before proceeding.
     If you refresh your browser and the IP doesn't change, it's likely due to browser "Keep-Alive." To see the ALB switch between AZs, run this from your local PowerShell:
     ```powershell
     # Run 10 requests to see the distribution
-    1..10 | ForEach-Object { curl -s http://<LoadBalancerDNS> | Select-String "Hello" }
+    1..10 | ForEach-Object { curl.exe -s http://<LoadBalancerDNS> | Select-String "Served" }
     ```
+    *(Note: Because this is a modern React web app, you will see raw HTML output in your terminal. Look closely at the `Served by IP:` section in the output—you should see the IP address and AZ alternating between requests).*
 
 2.  **Test Database Access (SSM Session Manager):**
     We use AWS Systems Manager to securely connect to the private App instances without needing open ports or a Bastion host.
