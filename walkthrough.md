@@ -283,12 +283,21 @@ AWS is ready and waiting. Now we must tell the strongSwan software how to connec
     ```
     Use the returned IP (e.g., `10.10.20.5`) for ping testing only. Always use the DNS endpoint for actual connections.
 
-3.  **Ping from On-Prem to AWS:**
+3.  **Test Connectivity from On-Prem to AWS:**
     Wait **30-90 seconds** after strongSwan is configured before testing — the VPN tunnel and route propagation need time to settle.
+    
+    You can ping the App instances to verify routing:
     ```bash
     ping <AppInstancePrivateIP>
-    ping <DB_Private_IP>
     ```
+
+    > [!WARNING]
+    > **Do not use `ping` for the Database.** AWS RDS instances block ICMP (ping) requests by design. To test database connectivity over the VPN, test the PostgreSQL port (5432) using `nc` (Netcat):
+    
+    ```bash
+    nc -zv <DB_Private_IP> 5432
+    ```
+    *A successful response will say `Connection to <DB_Private_IP> 5432 port [tcp/postgresql] succeeded!`*
 
 4.  **Access Database from On-Prem:**
     Test the direct database connection over the VPN tunnel:
